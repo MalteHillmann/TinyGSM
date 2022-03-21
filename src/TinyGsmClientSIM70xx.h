@@ -385,6 +385,155 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
     return false;
   }
 
+    bool setGNSSModeImpl(bool gps, bool glonass, bool beidou, bool galileo, bool qzss, bool dpo) {
+    // We need to built a value
+    // <gps mode>,<glo mode>,<bd mode>,<gal mode>
+    // QZSS and DPO is not supported on SIM7000/SIM7080
+    String data;
+    data = String(gps) + "," + String(glonass) + "," + String(beidou) + "," + String(galileo);
+    thisModem().sendAT(GF("+CGNSMOD="), data);
+    if (waitResponse() != 1) { return false; }
+    return true;
+  }
+  
+  bool getGNSSModeImpl(bool* gps, bool* glonass, bool* beidou, bool* galileo, bool* qzss, bool* dpo) {
+    thisModem().sendAT(GF("+CGNSMOD?"));
+    // Response looks like: +CGNSMOD: 1,1,1,1
+    if (waitResponse(GF(GSM_NL "+CGNSMOD:")) != 1) { return false; }
+    bool igps = thisModem().streamGetIntBefore(',');
+    bool iglonass = thisModem().streamGetIntBefore(',');
+    bool ibeidou = thisModem().streamGetIntBefore(',');
+    bool igalileo = thisModem().streamGetIntBefore('\n');
+    if (gps != NULL) *gps = true; 
+    if (glonass != NULL) *glonass = iglonass;
+    if (beidou != NULL) *beidou = ibeidou;
+    if (galileo != NULL) *galileo = igalileo;
+    if (qzss != NULL) *qzss = false; // not supported
+    if (dpo != NULL) *dpo = false; // not supported
+    return true;
+  }
+
+  /**
+  * @brief This function enables XTRA function for Assisted-GPS
+  *
+  * @return true if XTRA is enabled, false if there was an error
+  */
+  bool enableAGPSImpl() {
+    thisModem().sendAT(GF("+CGNSXTRA=1"));
+    if (thisModem().waitResponse() != 1) { return false; }
+    return true;
+  }
+
+  /**
+  * @brief function disables XTRA function for Assisted-GPS
+  *
+  * @return true if XTRA is disabled, false if there was an error
+  */
+  bool disableAGPSImpl() {
+    thisModem().sendAT(GF("+CGNSXTRA=0"));
+    if (thisModem().waitResponse() != 1) { return false; }
+    return true;
+  }
+
+  /**
+  * @brief function validates, that the XTRA file isn't expired.
+  *
+  * @return true if XTRA file is valid, false is XTRA file is invalid or there was an error
+  */
+  bool validateAGPSImpl() {
+    DBG("Validating AGPS Data");
+    thisModem().sendAT(GF("+CGNSXTRA"));
+    if (thisModem().waitResponse() != 1) { return false; }
+    // Response looks like: 
+    // 168,2022/03/21,10:00:00
+    // 168,2022/03/21,11:00:00
+    // Validity in hours and date downloaded
+    thisModem().streamSkipUntil('\n');
+    thisModem().streamSkipUntil('\n');
+    int validity = thisModem().streamGetIntBefore(',');
+    int year = thisModem().streamGetIntBefore('/');
+    int month = thisModem().streamGetIntBefore('/');
+    int day = thisModem().streamGetIntBefore(',');
+    int hour = thisModem().streamGetIntBefore(':');
+    int minute = thisModem().streamGetIntBefore(':'); // seems to be always 00
+    int second = thisModem().streamGetIntBefore('\r'); // seems to be always 00
+    String date = String(year)+"/"+String(month)+"/"+String(day)+" "+String(hour)+":"+String(minute)+":"+String(second);
+    DBG("AGPS Data valid for", validity, "hours after download");
+    DBG("Downloaded date:",date);
+    // We need the current time
+    thisModem().NTPServerSync("pool.ntp.org", 0);
+    int   yearNTP    = 0;
+    int   monthNTP   = 0;
+    int   dayNTP     = 0;
+    int   hourNTP    = 0;
+    int   minNTP     = 0;
+    int   secNTP     = 0;
+    float timezoneNTP = 0;
+    if (thisModem().getNetworkTime(&yearNTP, &monthNTP, &dayNTP, &hourNTP, &minNTP, &secNTP,
+                             &timezoneNTP)) {
+    // To simplify date calculations, we declare the file as expired, if a new month starts and ignore minutes/seconds
+    if (yearNTP > year || monthNTP > month) return false;
+    int dayvalidity = (int)validity/24;
+    // Check if current day is bigger than download day + validity days
+    if (dayNTP > day+dayvalidity) return false;    
+    // Check if current day is last day of validity and current hour is later than download hour
+    if (dayNTP == day+dayvalidity-1 && hourNTP > hour) return false;
+    // Seems to be valid
+    DBG("AGPS Data seems to be valid!");
+    return true;
+                             }
+  }
+
+  /**
+   * @brief Updates Assited-GPS XTRA file.
+   * @warning Stops ALL other connections! Needs modem.gprsConnect afterwards!
+   * 
+   * @param force Force update, even if XTRA file isn't expired
+   * 
+   * @return true if success, false if error
+   */
+  bool updateAGPSImpl(const char* apn, bool force=false) {
+    DBG("Updating AGPS Data!");
+    if (force || !thisModem().validateAGPSImpl()) {
+      DBG("AGPS is invalid or update was forced!");
+      DBG("We need to detach PDP context to get APP PDP mode");
+      thisModem().sendAT(GF("+CGATT=0"));
+      if (thisModem().waitResponse() != 1) { 
+        DBG("Error: Can't detach PDP context");
+        return false;
+      }
+      delay(1000);
+      thisModem().sendAT(GF("+CNACT=1,\""),apn,"\"");
+      if (thisModem().waitResponse(10000L, GF("+APP PDP: ACTIVE")) != 1) { 
+        DBG("Error: Can't activate APP PDP mode");
+        return false;
+      }
+     DBG("Starting AGPS file download!");
+      for (int i = 1; i <= 3; i++) {
+        thisModem().sendAT(GF("+HTTPTOFS=\""), "http://xtrapath"+String(i)+".izatcloud.net/xtra3grc.bin\",\"/customer/xtra3grc.bin\"");
+        if (thisModem().waitResponse(10000L, GF(GSM_NL "+HTTPTOFS: 200")) == 1) {
+          break;
+        }
+        DBG("AGPS Data download failed, retrying another server!");
+        if (i == 3) {
+          DBG("All servers failed. Aborting.");
+          return false;
+        }
+      } 
+      DBG("AGPS Data successfully downloaded, now loading file!");
+      thisModem().sendAT(GF("+CGNSCPY"));
+      if (thisModem().waitResponse() != 1) { 
+        DBG("AGPS Data update failed!");
+        return false; }
+      DBG("AGPS Data successfully updated!");
+      DBG("Now we need to re-init the modem for normal work!");
+      thisModem().init();
+      return true;
+    } 
+    DBG("AGPS Data is already up to date!");
+    return true;
+  }
+
   /*
    * Time functions
    */

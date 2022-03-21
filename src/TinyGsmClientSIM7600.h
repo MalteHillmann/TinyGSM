@@ -542,24 +542,53 @@ class TinyGsmSim7600 : public TinyGsmModem<TinyGsmSim7600>,
 
 
   /**
-   *  CGNSSMODE: <gnss_mode>,<dpo_mode>
-   *  This command is used to configure GPS, GLONASS, BEIDOU and QZSS support
-   * mode. 0 : GLONASS 1 : BEIDOU 2 : GALILEO 3 : QZSS dpo_mode: 1 enable , 0
-   * disable
+   * @brief 
+   * 
+   * @param gps 
+   * @param glonass 
+   * @param beidou 
+   * @param galileo 
+   * @param qzss 
+   * @param dpo 
+   * @return String 
    */
-  String setGNSSModeImpl(uint8_t mode, bool dpo) {
-    String res;
-    sendAT(GF("+CGNSSMODE="), mode, ",", dpo);
-    if (waitResponse(10000L, res) != 1) { return ""; }
-    res.replace(GSM_NL, "");
-    res.trim();
-    return res;
+  bool setGNSSModeImpl(bool gps, bool glonass, bool beidou, bool galileo, bool qzss, bool dpo) {
+    // We need to built a value
+    // <gnss_mode>,<dpo_mode>
+    // <gnss_mode> Range – 0 to 15 
+    // Bit0: GLONASS 
+    // Bit1: BEIDOU 
+    // Bit2: GALILEO 
+    // Bit3: QZSS 
+    // 1: enable  
+    // 0: disable 
+    // GPS always support 
+    // <dpo_mode> 
+    // 1: enable DPO 
+    // 0: disable DPO
+    int gnss = 0;
+    if (glonass) gnss += 1;
+    if (beidou) gnss += 2;
+    if (galileo) gnss += 4;
+    if (qzss) gnss += 8;
+    String data;
+    data = gnss + "," + dpo;
+    sendAT(GF("+CGNSSMODE="), data);
+    if (waitResponse() != 1) { return false; }
+    return true;
   }
 
-  uint8_t getGNSSModeImpl() {
+  bool getGNSSModeImpl(bool* gps, bool* glonass, bool* beidou, bool* galileo, bool* qzss, bool* dpo) {
     sendAT(GF("+CGNSSMODE?"));
-    if (waitResponse(GF(GSM_NL "+CGNSSMODE:")) != 1) { return 0; }
-    return stream.readStringUntil(',').toInt();
+    if (waitResponse(GF(GSM_NL "+CGNSSMODE:")) != 1) { return false; }
+    // TODO: Finish this!
+/*    if (gps != NULL) *gps = true; // GPS is always enabled on SIM7600
+    if (glonass != NULL) *glonass = iglonass;
+    if (beidou != NULL) *beidou = ibeidou;
+    if (galileo != NULL) *galileo = igalileo;
+    if (qzss != NULL) *qzss = iqzss;
+    if (dpo != NULL) *dpo = idpo;*/
+    return true;
   }
 
 
