@@ -457,6 +457,10 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
     int hour = thisModem().streamGetIntBefore(':');
     int minute = thisModem().streamGetIntBefore(':'); // seems to be always 00
     int second = thisModem().streamGetIntBefore('\r'); // seems to be always 00
+    if (validity == -9999 || year == -9999 || month == -9999 || day == -9999 || hour == -9999 || minute == -9999 || second == -9999) {
+      DBG("AGPS validity period parsing failed. AGPS data is invalid.");
+      return false;
+    }
     String date = String(year)+"/"+String(month)+"/"+String(day)+" "+String(hour)+":"+String(minute)+":"+String(second);
     DBG("AGPS Data valid for", validity, "hours after download");
     DBG("Downloaded date:",date);
@@ -510,11 +514,12 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
       }
      DBG("Starting AGPS file download!");
       for (int i = 1; i <= 3; i++) {
-        thisModem().sendAT(GF("+HTTPTOFS=\""), "http://xtrapath"+String(i)+".izatcloud.net/xtra3grc.bin\",\"/customer/xtra3grc.bin\"");
+        thisModem().sendAT(GF("+HTTPTOFS=\""), "http://xtrapath3.izatcloud.net/xtra3grc.bin\",\"/customer/xtra3grc.bin\"");
+        // IMPORTANT: Do not try to download from xtrapath1 or xtrapath2! They deliver another XTRA file that does not work and freezes SIM7000 until hard reset!
         if (thisModem().waitResponse(10000L, GF(GSM_NL "+HTTPTOFS: 200")) == 1) {
           break;
         }
-        DBG("AGPS Data download failed, retrying another server!");
+        DBG("AGPS Data download failed, retrying!");
         if (i == 3) {
           DBG("All servers failed. Aborting.");
           return false;
@@ -524,9 +529,15 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
       thisModem().sendAT(GF("+CGNSCPY"));
       if (thisModem().waitResponse() != 1) { 
         DBG("AGPS Data update failed!");
-        return false; }
+        return false; 
+      }
       DBG("AGPS Data successfully updated!");
       DBG("Now we need to re-init the modem for normal work!");
+      thisModem().sendAT(GF("+CGATT=0"));
+      if (thisModem().waitResponse() != 1) { 
+        DBG("Error: Can't detach APP PDP context");
+        return false;
+      }
       thisModem().init();
       return true;
     } 
