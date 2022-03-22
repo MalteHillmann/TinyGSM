@@ -540,18 +540,6 @@ class TinyGsmSim7600 : public TinyGsmModem<TinyGsmSim7600>,
     return false;
   }
 
-
-  /**
-   * @brief 
-   * 
-   * @param gps 
-   * @param glonass 
-   * @param beidou 
-   * @param galileo 
-   * @param qzss 
-   * @param dpo 
-   * @return String 
-   */
   bool setGNSSModeImpl(bool gps, bool glonass, bool beidou, bool galileo, bool qzss, bool dpo) {
     // We need to built a value
     // <gnss_mode>,<dpo_mode>
