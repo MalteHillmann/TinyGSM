@@ -400,6 +400,7 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
     thisModem().sendAT(GF("+CGNSMOD?"));
     // Response looks like: +CGNSMOD: 1,1,1,1
     if (waitResponse(GF(GSM_NL "+CGNSMOD:")) != 1) { return false; }
+    if (waitResponse(GF(GSM_OK)) != 1) { return false; }
     bool igps = thisModem().streamGetIntBefore(',');
     bool iglonass = thisModem().streamGetIntBefore(',');
     bool ibeidou = thisModem().streamGetIntBefore(',');
@@ -443,13 +444,14 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
   bool validateAGPSImpl() {
     DBG("Validating AGPS Data");
     thisModem().sendAT(GF("+CGNSXTRA"));
-    if (thisModem().waitResponse() != 1) { return false; }
+    if (thisModem().waitResponse(30000L, GF(GSM_NL)) != 1) { 
+      DBG("No response.");
+      return false; 
+    }
     // Response looks like: 
     // 168,2022/03/21,10:00:00
     // 168,2022/03/21,11:00:00
     // Validity in hours and date downloaded
-    thisModem().streamSkipUntil('\n');
-    thisModem().streamSkipUntil('\n');
     int validity = thisModem().streamGetIntBefore(',');
     int year = thisModem().streamGetIntBefore('/');
     int month = thisModem().streamGetIntBefore('/');
@@ -464,28 +466,26 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
     String date = String(year)+"/"+String(month)+"/"+String(day)+" "+String(hour)+":"+String(minute)+":"+String(second);
     DBG("AGPS Data valid for", validity, "hours after download");
     DBG("Downloaded date:",date);
-    // We need the current time
-    thisModem().NTPServerSync("pool.ntp.org", 0);
-    int   yearNTP    = 0;
-    int   monthNTP   = 0;
-    int   dayNTP     = 0;
-    int   hourNTP    = 0;
-    int   minNTP     = 0;
-    int   secNTP     = 0;
-    float timezoneNTP = 0;
-    if (thisModem().getNetworkTime(&yearNTP, &monthNTP, &dayNTP, &hourNTP, &minNTP, &secNTP,
-                             &timezoneNTP)) {
-    // To simplify date calculations, we declare the file as expired, if a new month starts and ignore minutes/seconds
-    if (yearNTP > year || monthNTP > month) return false;
-    int dayvalidity = (int)validity/24;
-    // Check if current day is bigger than download day + validity days
-    if (dayNTP > day+dayvalidity) return false;    
-    // Check if current day is last day of validity and current hour is later than download hour
-    if (dayNTP == day+dayvalidity-1 && hourNTP > hour) return false;
-    // Seems to be valid
-    DBG("AGPS Data seems to be valid!");
-    return true;
-                             }
+    int   yearNet    = 0;
+    int   monthNet   = 0;
+    int   dayNet     = 0;
+    int   hourNet    = 0;
+    int   minNet     = 0;
+    int   secNet     = 0;
+    float timezoneNet = 0;
+    if (thisModem().getNetworkTime(&yearNet, &monthNet, &dayNet, &hourNet, &minNet, &secNet,
+                             &timezoneNet)) {
+      // To simplify date calculations, we declare the file as expired, if a new month starts and ignore minutes/seconds
+      if (yearNet > year || monthNet > month) return false;
+      int dayvalidity = (int)validity/24;
+      // Check if current day is bigger than download day + validity days
+      if (dayNet > day+dayvalidity) return false;    
+      // Check if current day is last day of validity and current hour is later than download hour
+      if (dayNet == day+dayvalidity-1 && hourNet > hour) return false;
+      // Seems to be valid
+      DBG("AGPS Data seems to be valid!");
+      return true;
+    }
   }
 
   /**
@@ -500,15 +500,20 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
     DBG("Updating AGPS Data!");
     if (force || !thisModem().validateAGPSImpl()) {
       DBG("AGPS is invalid or update was forced!");
-      DBG("We need to detach PDP context to get APP PDP mode");
+      DBG("We need to cycle PDP context to get APP PDP mode");
       thisModem().sendAT(GF("+CGATT=0"));
-      if (thisModem().waitResponse() != 1) { 
-        DBG("Error: Can't detach PDP context");
+      if (thisModem().waitResponse(GF(GSM_OK)) != 1) { 
+        DBG("Error: Can't deattach PDP context");
+        DBG("This probably happens because of modem freezed. Try again with force=true because that skips XTRAFILE check.");
         return false;
       }
-      delay(1000);
+      thisModem().sendAT(GF("+CGATT=1"));
+      if (thisModem().waitResponse(60000L, GF(GSM_OK)) != 1) { 
+        DBG("Error: Can't attach PDP context");
+        return false;
+      }
       thisModem().sendAT(GF("+CNACT=1,\""),apn,"\"");
-      if (thisModem().waitResponse(10000L, GF("+APP PDP: ACTIVE")) != 1) { 
+      if (thisModem().waitResponse(60000L, GF("+APP PDP: ACTIVE")) != 1) { 
         DBG("Error: Can't activate APP PDP mode");
         return false;
       }
@@ -516,8 +521,10 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
       for (int i = 1; i <= 3; i++) {
         thisModem().sendAT(GF("+HTTPTOFS=\""), "http://xtrapath3.izatcloud.net/xtra3grc.bin\",\"/customer/xtra3grc.bin\"");
         // IMPORTANT: Do not try to download from xtrapath1 or xtrapath2! They deliver another XTRA file that does not work and freezes SIM7000 until hard reset!
-        if (thisModem().waitResponse(10000L, GF(GSM_NL "+HTTPTOFS: 200")) == 1) {
-          break;
+        if (thisModem().waitResponse(GF(GSM_OK)) == 1) {
+          if (thisModem().waitResponse(60000L, GF(GSM_NL "+HTTPTOFS: 200,")) == 1 && thisModem().waitResponse(GF(GSM_NL)) == 1) {
+            break;
+          }
         }
         DBG("AGPS Data download failed, retrying!");
         if (i == 3) {
@@ -527,7 +534,7 @@ class TinyGsmSim70xx : public TinyGsmModem<TinyGsmSim70xx<modemType>>,
       } 
       DBG("AGPS Data successfully downloaded, now loading file!");
       thisModem().sendAT(GF("+CGNSCPY"));
-      if (thisModem().waitResponse() != 1) { 
+      if (thisModem().waitResponse(30000L, GF("+CGNSCPY: 0")) != 1 || thisModem().waitResponse(GF(GSM_OK)) != 1 ) { 
         DBG("AGPS Data update failed!");
         return false; 
       }
